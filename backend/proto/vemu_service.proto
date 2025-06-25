@@ -1,0 +1,206 @@
+syntax = "proto3";
+
+package vemu.v1;
+
+option go_package = "github.com/yourorg/go-vemu/api/v1;v1";
+
+// VemuService defines the gRPC interface for interacting with the RISC-V emulator.
+// It provides methods for controlling the simulation, managing state, and interacting with memory and registers.
+// 仿真器 gRPC 服务接口，提供仿真控制、状态管理、内存和寄存器交互等功能。
+//
+// ────────────────── ① 生命周期 ──────────────────
+service VemuService {
+  // Resets the emulator to its initial state.
+  // 重置仿真器到初始状态。
+  rpc Reset            (Empty)   returns (Status);
+  // Shuts down the emulator instance gracefully.
+  // 安全地关闭仿真器实例。
+  rpc Shutdown         (Empty)   returns (Status);
+
+  // ──────────────── ② 装载固件 / 数据 ────────────────
+  // Loads a program into the emulator's memory from a hex file format.
+  // 从 hex 文件格式加载程序到仿真器内存。
+  rpc LoadFirmware     (LoadFirmwareRequest)     returns (Status);
+  // (Not yet implemented) Loads a raw binary blob into a specific memory address.
+  // (尚未实现) 加载二进制数据到指定内存地址。
+  rpc LoadBinaryBlob   (LoadBinaryRequest)       returns (Status);
+
+  // ──────────────── ③ 运行控制 ────────────────
+  // Executes a single instruction or a small number of cycles.
+  // 执行单条指令或少量周期。
+  rpc Step             (StepRequest)             returns (StepResponse);
+  // Runs the simulation continuously until a breakpoint is hit, an error occurs, or it is paused.
+  // 连续运行仿真，直到遇到断点、错误或暂停。
+  rpc Run              (RunRequest)              returns (RunResponse);
+  // Pauses a running simulation.
+  // 暂停正在运行的仿真。
+  rpc Pause            (Empty)   returns (Status);
+  // Queries the current complete state of the CPU, including registers and cycle count.
+  // 查询当前完整的 CPU 状态，包括寄存器和周期计数。
+  rpc QueryState       (Empty)   returns (CpuState);
+
+  // ──────────────── ④ 存储访问 ────────────────
+  // Reads a block of memory from a specified address.
+  // 从指定地址读取一块内存。
+  rpc ReadMemory       (ReadMemRequest)          returns (ReadMemResponse);
+  // Writes a block of data to a specified memory address.
+  // 向指定内存地址写入一块数据。
+  rpc WriteMemory      (WriteMemRequest)         returns (Status);
+
+  // Reads a row from the Venus DSPM (vector scratchpad memory).
+  // 专门读取/写入 Venus DSPM (向量暂存器)。
+  rpc ReadVector       (ReadVectorRequest)       returns (ReadVectorResponse);
+  // Writes a row to the Venus DSPM.
+  // 向 Venus DSPM 写入一行数据。
+  rpc WriteVector      (WriteVectorRequest)      returns (Status);
+
+  // ──────────────── ⑤ CPU/CSR 访问 ────────────────
+  // (Not yet implemented) Gets the entire general-purpose register file.
+  // (尚未实现) 获取所有通用寄存器。
+  rpc GetRegs          (Empty)   returns (RegisterFile);
+  // Sets the value of a single general-purpose register.
+  // 设置单个通用寄存器的值。
+  rpc SetReg           (SetRegRequest)           returns (Status);
+  // Gets the value of a Control and Status Register (CSR).
+  // 获取一个控制和状态寄存器 (CSR) 的值。
+  rpc GetCSR           (GetCsrRequest)           returns (GetCsrResponse);
+  // Sets the value of a Control and Status Register (CSR).
+  // 设置一个控制和状态寄存器 (CSR) 的值。
+  rpc SetCSR           (SetCsrRequest)           returns (Status);
+
+  // ──────────────── ⑥ 调试 / 事件流 ────────────────
+  // Streams execution trace events from the server to the client.
+  // 以流的形式将执行跟踪事件从服务端发送到客户端。
+  rpc TraceStream      (Empty)   returns (stream TraceEvent);
+  // Sets a breakpoint at a specific program counter (PC) address.
+  // 在指定的程序计数器 (PC) 地址设置断点。
+  rpc SetBreakpoint    (BreakpointRequest)       returns (Status);
+  // Clears a previously set breakpoint.
+  // 清除一个已设置的断点。
+  rpc ClearBreakpoint  (BreakpointRequest)       returns (Status);
+}
+
+// ────────────────── 消息定义 (Message Definitions) ──────────────────
+
+// A generic status message used for responses that only need to indicate success or failure.
+// 通用状态消息，用于仅需表明成功或失败的响应。
+message Status {
+  bool ok          = 1; // True if the operation was successful. / 操作是否成功。
+  string message   = 2; // An optional error message if the operation failed. / 操作失败时的可选错误信息。
+}
+
+// ② ─ 固件 / 数据 (Firmware / Data)
+// Request to load a program in Intel hex format.
+// 加载 Intel hex 格式程序的请求。
+message LoadFirmwareRequest  { bytes hex_text = 1; }  // The raw text content of the .hex file. / .hex 文件的原始文本内容。
+// Request to load a raw binary blob.
+// 加载二进制数据的请求。
+message LoadBinaryRequest    {
+  uint32 addr   = 1; // The target memory address to load the data. / 加载数据的目标内存地址。
+  bytes data = 2;    // The binary data to load. / 要加载的二进制数据。
+}
+
+// ③ ─ 运行控制 (Execution Control)
+// Request to step the simulation.
+// 单步执行仿真的请求。
+message StepRequest          { uint64 cycles = 1; }   // Number of cycles to execute. If 0, executes a single instruction. / 要执行的周期数。如果为 0，则执行单条指令。
+// Response for a step request.
+// 单步执行请求的响应。
+message StepResponse         { uint64 cycles_executed = 1; }
+// Request to run the simulation.
+// 运行仿真的请求。
+message RunRequest           { uint64 max_cycles = 1; } // If 0, runs indefinitely. / 如果为 0，则无限期运行。
+// Response for a run request.
+// 运行请求的响应。
+message RunResponse          {
+  uint64 cycles_executed = 1;
+  uint32 reason          = 2; // Stop reason code, corresponds to the StopReason enum in the core. / 停止原因代码，对应核心中的 StopReason 枚举。
+  bool   ebreak          = 3 [deprecated = true]; // Deprecated: Use 'reason' instead. / 已弃用：请使用 'reason' 字段。
+}
+
+// ④ ─ 存储访问 (Memory Access)
+// Request to read from memory.
+// 读内存请求。
+message ReadMemRequest       {
+  uint32 addr  = 1;   // The starting address to read from. / 读取的起始地址。
+  uint32 length = 2;  // The number of bytes to read. / 读取的字节数。
+}
+// Response containing the data read from memory.
+// 包含从内存中读取的数据的响应。
+message ReadMemResponse      { bytes  data  = 1; }
+// Request to write to memory.
+// 写内存请求。
+message WriteMemRequest      {
+  uint32 addr  = 1;   // The starting address to write to. / 写入的起始地址。
+  bytes data   = 2;   // The data to write. / 要写入的数据。
+}
+
+// Venus DSPM（ROW 视图）(Venus DSPM (ROW view))
+// Request to read from the Venus vector scratchpad.
+// 从 Venus 向量暂存器读取的请求。
+message ReadVectorRequest    {
+  uint32 row   = 1;   // The row index to read. / 要读取的行索引。
+  uint32 elems = 2;   // The number of elements to read from the row. / 要从该行读取的元素数量。
+}
+// Response containing data from the Venus vector scratchpad.
+// 包含来自 Venus 向量暂存器数据的响应。
+message ReadVectorResponse   { repeated uint32 values = 1; }
+// Request to write to the Venus vector scratchpad.
+// 向 Venus 向量暂存器写入的请求。
+message WriteVectorRequest   {
+  uint32 row = 1;           // The row index to write to. / 要写入的行索引。
+  repeated uint32 values = 2; // The values to write. / 要写入的值。
+}
+
+// ⑤ ─ CPU / CSR
+// Contains the state of all general-purpose registers.
+// 包含所有通用寄存器状态。
+message RegisterFile         {
+  repeated uint32 regs = 1; // 32 general-purpose registers (x0-x31). / 32个通用寄存器 (x0-x31)。
+  uint32 pc = 2;            // The program counter. / 程序计数器。
+}
+// Request to set a single register's value.
+// 设置单个寄存器值的请求。
+message SetRegRequest        {
+  uint32 index = 1; // The index of the register to set (0-31). / 要设置的寄存器索引 (0-31)。
+  uint32 value = 2; // The new value for the register. / 寄存器的新值。
+}
+// Request to get a CSR value.
+// 获取 CSR 值的请求。
+message GetCsrRequest        { uint32 id    = 1; } // The ID of the CSR to read. / 要读取的 CSR ID。
+// Response containing a CSR value.
+// 包含 CSR 值的响应。
+message GetCsrResponse       { uint32 value = 1; }
+// Request to set a CSR value.
+// 设置 CSR 值的请求。
+message SetCsrRequest        {
+  uint32 id    = 1; // The ID of the CSR to write. / 要写入的 CSR ID。
+  uint32 value = 2; // The new value for the CSR. / CSR 的新值。
+}
+
+// A complete snapshot of the CPU's state.
+// CPU 状态的完整快照 (给 QueryState 返回)。
+message CpuState {
+  repeated uint32 regs = 1; // 32 general-purpose registers (x0-x31). / 32个通用寄存器 (x0-x31)。
+  uint32 pc = 2;            // The program counter. / 程序计数器。
+  uint64 cycle = 3;         // The total number of cycles executed. / 已执行的总周期数。
+}
+
+// ⑥ ─ 调试 (Debugging)
+// Request to set or clear a breakpoint.
+// 设置或清除断点的请求。
+message BreakpointRequest    { uint32 pc = 1; } // The program counter address for the breakpoint. / 断点的程序计数器地址。
+
+// An empty message, used for requests that don't require parameters.
+// 空消息，用于不需要参数的请求。
+message Empty {}
+
+// Represents a single event in an execution trace.
+// 代表执行跟踪中的单个事件。
+message TraceEvent {
+  uint64 cycle   = 1;       // The cycle count when the instruction was executed. / 指令执行时的周期计数。
+  uint32 pc      = 2;       // The program counter of the executed instruction. / 已执行指令的程序计数器。
+  uint32 instr   = 3;       // The raw instruction encoding. / 原始指令编码。
+  string name    = 4;       // The decoded instruction name (e.g., "addi", "VADD"). / 解码后的指令名称 (例如 "addi", "VADD")。
+  repeated uint32 regs = 5; // Optional: The registers that were modified by this instruction. / 可选：被此条指令修改的寄存器。
+} 
